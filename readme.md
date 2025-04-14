@@ -1,94 +1,109 @@
-### 功能
+# QTune-Torch
 
-[✓] 基于负载+状态特征自动调参（environment.py）
+PyTorch implementation of QTune for automatic database configuration tuning.
 
-[✓] 解决硬编码问题（database、benchmark、knob类别|范围|类型等、系统状态指标、prediction model、模型尺寸等）
+## Features
 
-[✓] 提供预训练数据和模型（model.py）
+[✓] Automatic parameter tuning based on workload + state features (environment.py)
 
-[✓] 添加OLAP/OLTP测试集（JOB、Sysbench、TPC-H）
+[✓] Solved hardcoding issues (database, benchmark, knob categories/ranges/types, system state metrics, prediction model, model size, etc.)
 
-[✓] 绘制训练曲线（draw.py），包括随机探索、模型预测的表现（latency/throughput）
+[✓] Provides pre-trained data and models (torch_model.py)
 
-[✓] 停机问题
+[✓] OLAP/OLTP test sets (JOB, Sysbench, TPC-H)
+
+[✓] Training curve visualization (draw.py), including random exploration and model prediction performance (latency/throughput)
+
+[✓] Zero-Order optimization support for actor network training
+
+[✓] Early stopping
    
-      设置config.ini文件中的stopping_throughput_improvement_percentage参数。
+      Set the stopping_throughput_improvement_percentage parameter in config.ini file.
 
-[todo] 同时支持重启/非重启参数
+[todo] Support restart/non-restart parameters simultaneously
 
-[todo] 支持基于模板的在线参数调优；端到端训练调参模型和负载编码模型
+[todo] Support template-based online parameter tuning; end-to-end training of tuning models and workload encoding models
 
-[todo] 集合现有规则预调参
+[todo] Integrate existing rule-based pre-tuning
 
 
-### 搭建步骤
+## Setup Steps
 
-1. 安装v 5.7 MySQL数据库
+1. Install MySQL 5.7 database
 
-   docker run --name mysql-qt -e MYSQL_ROOT_PASSWORD=123456 -v $(pwd)/docker_conf_sql5.7/init.sql:/docker-entrypoint-initdb.d/init.sql -v $(pwd)/docker_conf_sql5.7/sql.cnf:/etc/mysql/conf.d/sql.cnf -p 3307:3306 -d mysql:5.7
-
-   * 给mysql的root用户开启远程访问权限参考：[mysql给root开启远程访问权限](https://www.cnblogs.com/goxcheer/p/8797377.html)
-
-   * add a new line `sql_mode=NO_ENGINE_SUBSTITUTION` to `my.cnf` or `my.ini`, and restart mysqld
-
-2. 在数据库的服务器上，上传标准测试集的代码，并进行安装：
-   * Sysbench：https://blog.csdn.net/cxin917/article/details/81557453（数据库服务器端安装）
-     ```
-     sysbench oltp_read_only prepare --db-driver=mysql --tables=20 --table-size=8000000 --mysql-host=127.0.0.1 --mysql-user=root --mysql-password=123456 --mysql-port=3307 --mysql-db='sysbench' --mysql-storage-engine=innodb --mysql-db='sysbench'  --time=150  --range-size=10 --rand-type=uniform --report-interval=10
-
-     ```
-   * JOB：https://blog.csdn.net/cxin917/article/details/81557453 (imdb数据集如果下载过慢，可以通过云盘提供)
-   * 开启mysqllog，获取workload。
-   * 关闭mysqllog
-3. 将调参代码放在能够连接数据库的一台服务器上，配置python3.6依赖环境。安装依赖包
+   ```bash
+   docker run --name mysql-qt -e MYSQL_ROOT_PASSWORD=123456 \
+   -v $(pwd)/docker_conf_sql5.7/init.sql:/docker-entrypoint-initdb.d/init.sql \
+   -v $(pwd)/docker_conf_sql5.7/sql.cnf:/etc/mysql/conf.d/sql.cnf \
+   -p 3307:3306 -d mysql:5.7
    ```
+
+   * For MySQL root user remote access permissions, refer to: [MySQL root remote access permissions](https://www.cnblogs.com/goxcheer/p/8797377.html)
+
+   * Add a new line `sql_mode=NO_ENGINE_SUBSTITUTION` to `my.cnf` or `my.ini`, and restart mysqld
+
+2. Upload standard test set code to the database server and install:
+   * Sysbench: [Installation guide](https://blog.csdn.net/cxin917/article/details/81557453) (Install on database server)
+     ```bash
+     sysbench oltp_read_only prepare --db-driver=mysql --tables=20 --table-size=8000000 --mysql-host=127.0.0.1 --mysql-user=root --mysql-password=123456 --mysql-port=3307 --mysql-db='sysbench' --mysql-storage-engine=innodb --mysql-db='sysbench'  --time=150  --range-size=10 --rand-type=uniform --report-interval=10
+     ```
+   * JOB: [Installation guide](https://blog.csdn.net/cxin917/article/details/81557453) (IMDB dataset can be provided via cloud if download is slow)
+   * Enable mysqllog to obtain workload.
+   * Disable mysqllog when finished.
+
+3. Place the tuning code on a server that can connect to the database, configure Python 3.6+ dependencies. Install required packages:
+   ```bash
    pip3 install -r requirements.txt
    ```
-4. 修改参数:
-   将config_example.ini复制，新文件名为config.ini
-   `
-      cp config_example.ini config.ini
-   `
-   在config.ini修改各项参数
-   workload_file_path将从指定的文件中获取，文件内容可参考workload_file_example.txt文件。
 
-5. 运行代码：
-
+4. Configure parameters:
+   Copy config_example.ini to create a new file named config.ini
+   ```bash
+   cp config_example.ini config.ini
    ```
+   Modify parameters in config.ini
+   workload_file_path will be obtained from the specified file, the content can refer to workload_file_example.txt file.
+
+5. Run the code:
+   ```bash
    python3 main.py
    ```
 
-6. 手动绘制training.png，用于观察训练效果：
-   
-   ```
+6. Manually draw training.png to observe training effects:
+   ```bash
    python3 draw.py res_predict-1623852012,res_random-1623852012 latency
    ```
 
+## Zero-Order Optimization
 
-### 报错解决
+This implementation supports zero-order optimization for training the actor network. Configure the optimization parameters in the `config.ini` file:
 
-**Q:** “mysql cannot connect from remote host”
+```ini
+[zero_order]
+noise_std = 0.1
+noise_decay = 0.99
+lr_decay = 0.99
+decay_step = 50
+norm_rewards = true
+```
 
-**A:** https://devanswers.co/cant-connect-mysql-server-remotely/#:~:text=You%20may%20need%20to%20comment,the%20MySQL%20config%20file%20mysqld.&text=The%20above%20line%20is%20telling,remote%20connections%20to%20that%20IP.
+## Troubleshooting
+
+**Q:** "mysql cannot connect from remote host"
+
+**A:** https://devanswers.co/cant-connect-mysql-server-remotely/
 
 **Q:** JOB queries take very long time to run
 
-**A:** 删除所有外键并创建索引（修改fkindexes.sql）；将脚本改成并行执行；选择部分sql执行
+**A:** Delete all foreign keys and create indexes (modify fkindexes.sql); change scripts to parallel execution; select partial SQL execution
 
-**Q:** “ImportError: attempted relative import with no known parent package”
+**Q:** "ImportError: attempted relative import with no known parent package"
 
-**A:** **https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
+**A:** https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
 
-**Q:** pd.read_csv: “ValueError: cannot convert float NaN to integer“
+**Q:** pd.read_csv: "ValueError: cannot convert float NaN to integer"
 
-**A:** 1. , sep = "\t"; 2. encoding style (utf-8)
-
-
-docker run --name mysql-qt \
-  -e MYSQL_ROOT_PASSWORD=123456 \
-  -v $(pwd)/init.sql:/docker-entrypoint-initdb.d/init.sql $(pwd)/sql.cnf:/etc/mysql/conf.d/sql.cnf \
-  -p 3307:3306 \
-  -d mysql:5.7
+**A:** 1. Use sep = "\t"; 2. Check encoding style (utf-8)
 
 
 
