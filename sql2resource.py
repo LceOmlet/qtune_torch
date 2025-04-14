@@ -3,23 +3,33 @@ import pandas
 import json
 import os
 import pymysql
-from keras.models import Sequential, Model
-from keras.layers import Dense, Dropout, Input
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from configs import predictor_output_dim
 
 query_types = ["insert", "delete", "update", "select"]
 
 
 # base prediction model
+class BaselineModel(nn.Module):
+    def __init__(self, num_feature=len(query_types), output_dim=predictor_output_dim):
+        super(BaselineModel, self).__init__()
+        self.fc1 = nn.Linear(num_feature, 10)
+        self.fc2 = nn.Linear(10, 10)
+        self.fc3 = nn.Linear(10, output_dim)
+        
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
 def baseline_model(num_feature=len(query_types)):
     # create model
-    model = Sequential()
-    model.add(Dense(10, input_dim=num_feature, kernel_initializer='normal', activation='relu'))
-    model.add(Dense(10, kernel_initializer='normal', activation='relu'))
-    model.add(Dense(predictor_output_dim, kernel_initializer='normal'))
-    # Compile model
-    model.compile(loss='mean_squared_error', optimizer='adam')
-
+    model = BaselineModel(num_feature=num_feature)
+    # Note: In PyTorch, we don't compile the model like in Keras
+    # The loss function and optimizer are defined separately when training
     return model
 
 
@@ -76,6 +86,13 @@ class SqlParser:
         self.in_mem = 0
         self.predict_sql_resource_value = None
         self.estimator = baseline_model(len(query_types) + len(self.tables))
+        # Set device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.estimator.to(self.device)
+        # Define optimizer and loss function
+        self.optimizer = optim.Adam(self.estimator.parameters())
+        self.criterion = nn.MSELoss()
+        
         # Prepare Data
         fs = open("training-data/trainData_sql.txt", 'r')
         df = pandas.read_csv(fs, sep=' ', header=None)
@@ -132,9 +149,12 @@ class SqlParser:
             print("predict_sql_resource_value is None")
             exit()
         return self.predict_sql_resource_value
-        # return self.estimator.predict(self.get_workload_encoding(
-        #     workload))  # input : np.array([[...]])      (sq_type, num_events, C, aggregation, in-mem)
-        # # output : np.array([[...]])
+        # PyTorch version of prediction
+        # workload_encoding = self.get_workload_encoding(workload)
+        # workload_tensor = torch.FloatTensor(workload_encoding).to(self.device)
+        # with torch.no_grad():
+        #     prediction = self.estimator(workload_tensor)
+        # return prediction.cpu().numpy()
 
     def update(self):
         pass
@@ -218,3 +238,37 @@ class SqlParser:
                 workload_encoding[i] = 1
 
         return workload_encoding.reshape(1, len(workload_encoding))
+        
+    def fit(self, X, Y, batch_size=50, epochs=10):
+        """
+        PyTorch version of the fit method to replace Keras' fit
+        """
+        X_tensor = torch.FloatTensor(X).to(self.device)
+        Y_tensor = torch.FloatTensor(Y).to(self.device)
+        
+        dataset = torch.utils.data.TensorDataset(X_tensor, Y_tensor)
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        
+        for epoch in range(epochs):
+            epoch_loss = 0
+            for batch_X, batch_Y in dataloader:
+                self.optimizer.zero_grad()
+                outputs = self.estimator(batch_X)
+                loss = self.criterion(outputs, batch_Y)
+                loss.backward()
+                self.optimizer.step()
+                epoch_loss += loss.item()
+            
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss/len(dataloader)}")
+            
+    def save_weights(self, filepath):
+        """
+        PyTorch version of save_weights to replace Keras' save_weights
+        """
+        torch.save(self.estimator.state_dict(), filepath)
+        
+    def load_weights(self, filepath):
+        """
+        PyTorch version of load_weights to replace Keras' load_weights
+        """
+        self.estimator.load_state_dict(torch.load(filepath))

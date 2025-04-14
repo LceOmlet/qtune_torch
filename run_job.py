@@ -2,8 +2,10 @@ import threading
 import time
 import queue
 import pymysql
+from concurrent.futures import ThreadPoolExecutor
 from configs import parse_args
 from dbutils.pooled_db import PooledDB
+from tqdm import tqdm
 
 args = parse_args()
 lock = threading.Lock()
@@ -22,115 +24,150 @@ class Producer(threading.Thread):
         super(Producer, self).__init__()
 
     def run(self):
-        for index, query in enumerate(self.workload):
-            self.__queue.put(str(index) + "~#~" + query)
-
-
-# 线程处理任务
-class Consumer(threading.Thread):
-    def __init__(self, name, queue):
-        self.__name = name
-        self.__queue = queue
-        super(Consumer, self).__init__()
-
-    def run(self):
-        while not self.__queue.empty():
-            query = self.__queue.get()
-            try:
-                consumer_process(query)
-            finally:
-                self.__queue.task_done()
+        try:
+            for index, query in enumerate(self.workload):
+                self.__queue.put(str(index) + "~#~" + query)
+        except Exception as e:
+            print(f"Producer error: {str(e)}")
 
 
 def consumer_process(task_key):
+    global total_lat
+    global error_query_num
+    
     query = task_key.split('~#~')[1]
     if query:
+        try:
+            start = time.time()
+            result = mysql_query(query)
+            end = time.time()
+            interval = end - start
 
-        start = time.time()
-        result = mysql_query(query)
-        end = time.time()
-        interval = end - start
-
-        if result:
-            lock.acquire()
-            global total_lat
-            total_lat += interval
-            lock.release()
-
-        else:
-            global error_query_num
-            lock.acquire()
-            error_query_num += 1
-            lock.release()
-
-
-def startConsumer(thread_num, queue):
-    t_consumer = []
-    for i in range(thread_num):
-        c = Consumer(i, queue)
-        c.setDaemon(True)
-        c.start()
-        t_consumer.append(c)
-    return t_consumer
+            if result:
+                with lock:
+                    total_lat += interval
+            else:
+                with lock:
+                    error_query_num += 1
+        except Exception as e:
+            print(f"Process error: {str(e)}")
+            with lock:
+                error_query_num += 1
 
 
 def run_job(thread_num=1, workload=[], resfile="../output.res"):
     global total_lat
-    total_lat = 0
     global error_query_num
+    global POOL
+    
+    total_lat = 0
     error_query_num = 0
     workload_len = len(workload)
-
-    global POOL
-    POOL = PooledDB(
-        creator=pymysql,  # 使用链接数据库的模块
-        maxconnections=thread_num,  # 连接池允许的最大连接数，0和None表示不限制连接数
-        mincached=0,  # 初始化时，链接池中至少创建的空闲的链接，0表示不创建
-        maxcached=0,  # 链接池中最多闲置的链接，0和None不限制
-        maxshared=0,
-        blocking=True,  # 连接池中如果没有可用连接后，是否阻塞等待。True，等待；False，不等待然后报错
-        maxusage=None,  # 一个链接最多被重复使用的次数，None表示无限制
-        setsession=[],  # 开始会话前执行的命令列表。
-        ping=0,
-        # ping MySQL服务端，检查是否服务可用。
-        host=args["host"],
-        port=int(args["port"]),
-        user=args["user"],
-        password=args["password"],
-        database=args["database"],
-        charset='utf8'
-    )
-
-    main_queue = queue.Queue(maxsize=0)
-    p = Producer("Producer Query", main_queue, workload)
-    p.setDaemon(True)
-    p.start()
-    startConsumer(thread_num, main_queue)
-    # 确保所有的任务都生成
-    p.join()
     start = time.time()
-    print("run_job开始运行,线程数：", thread_num)
-    # 等待处理完所有任务
-    main_queue.join()
-    POOL.close()
-    run_time = round(time.time() - start, 1)
-    run_query_num = workload_len - error_query_num
-    if run_query_num == 0:
-        avg_lat = 0
-        avg_qps = 0
-    else:
-        avg_lat = total_lat / run_query_num
-        avg_qps = run_query_num / run_time
-    text = "\navg_qps(queries/s): \t{}\navg_lat(s): \t{}\n".format(round(avg_qps, 4), round(avg_lat, 4))
-    with open(resfile, "w+") as f:
-        f.write(text)
-        f.close()
-    print("run_job运行结束\n脚本总耗时:{}秒,sql执行总耗时:{}秒\n共有{}条数据，执行成功{}条\n{}".format(str(run_time), str(total_lat),
-                                                                            str(workload_len),
-                                                                            str(run_query_num),
-                                                                            text))
 
-    return round(avg_qps, 4), round(avg_lat, 4)
+    # 限制线程数量，避免创建过多线程
+    # 根据系统资源情况，设置一个合理的线程数上限
+    max_threads = min(thread_num, 50)  # 限制最大线程数为50
+    print(f"Using {max_threads} threads for processing")
+
+    try:
+        POOL = PooledDB(
+            creator=pymysql,
+            maxconnections=min(max_threads, 100),  # 限制最大连接数
+            mincached=2,  # 保持最小连接数
+            maxcached=5,  # 限制最大缓存连接数
+            maxshared=3,
+            blocking=True,
+            maxusage=None,
+            setsession=[],
+            ping=1,  # 启用ping
+            host=args["host"],
+            port=int(args["port"]),
+            user=args["user"],
+            password=args["password"],
+            database=args["database"],
+            charset='utf8',
+            connect_timeout=10  # 添加连接超时
+        )
+
+        # 使用有界队列，限制队列大小
+        main_queue = queue.Queue(maxsize=1000)  # 限制队列大小
+        p = Producer("Producer", main_queue, workload)
+        p.start()
+
+        # 使用线程池而不是直接创建线程
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            # 创建进度条
+            pbar = tqdm(total=workload_len, desc="Processing queries", unit="query")
+            
+            # 提交所有任务到线程池
+            futures = []
+            processed_count = 0
+            
+            # 使用批处理方式提交任务
+            batch_size = 8000  # 每批处理的任务数
+            current_batch = []
+            
+            while processed_count < workload_len:
+                try:
+                    # 非阻塞方式获取任务
+                    task = main_queue.get_nowait()
+                    current_batch.append(task)
+                    processed_count += 1
+                    main_queue.task_done()
+                    
+                    # 当批次达到指定大小或处理完所有任务时，提交批次
+                    if len(current_batch) >= batch_size or processed_count >= workload_len:
+                        for task_item in current_batch:
+                            future = executor.submit(consumer_process, task_item)
+                            future.add_done_callback(lambda p: pbar.update(1))
+                            futures.append(future)
+                        current_batch = []
+                        
+                        # 等待当前批次完成，避免创建过多线程
+                        for future in futures[-len(current_batch):]:
+                            future.result()
+                            
+                except queue.Empty:
+                    # 如果队列为空但还没处理完所有任务，等待一小段时间
+                    time.sleep(0.1)
+                    continue
+            
+            # 等待所有任务完成
+            for future in futures:
+                future.result()
+            
+            # 关闭进度条
+            pbar.close()
+
+        run_time = round(time.time() - start, 1)
+        run_query_num = workload_len - error_query_num
+        
+        if run_query_num == 0:
+            avg_lat = 0
+            avg_qps = 0
+        else:
+            avg_lat = total_lat / run_query_num
+            avg_qps = run_query_num / run_time
+
+        text = "\navg_qps(queries/s): \t{}\navg_lat(s): \t{}\n".format(round(avg_qps, 4), round(avg_lat, 4))
+        with open(resfile, "w+") as f:
+            f.write(text)
+            f.close()
+
+        print("run_job运行结束\n脚本总耗时:{}秒,sql执行总耗时:{}秒\n共有{}条数据，执行成功{}条\n{}".format(
+            str(run_time), str(total_lat), str(workload_len), str(run_query_num), text))
+
+        return round(avg_qps, 4), round(avg_lat, 4)
+
+    except Exception as e:
+        print(f"run_job error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return 0, 0
+    finally:
+        if POOL:
+            POOL.close()
 
 
 def mysql_query(sql: str) -> bool:
@@ -145,3 +182,6 @@ def mysql_query(sql: str) -> bool:
     except Exception as error:
         print("mysql execute: " + str(error))
         return False
+    finally:
+        if 'conn' in locals():
+            conn.close()

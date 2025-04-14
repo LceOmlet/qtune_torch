@@ -1,23 +1,26 @@
-gym==0.18.0
+gym
 
-Keras==2.3.0
+Keras
 
-matplotlib==3.1.1
+matplotlib
 
-numpy==1.17.2
+numpy
 
-pandas==0.25.2
+pandas
 
-paramiko==2.7.2
+paramiko
 
-PyMySQL==0.10.1
+PyMySQL
 
-pyparsing==2.4.2
+pyparsing
 
-python-dateutil==2.8.0
+python-dateutil
 
-tensorflow==1.15.0
 
-sklearn==0.0
+scikit-learn
 
-DBUtils==2.0.1
+DBUtils
+
+torch
+torchaudio
+torchvision

@@ -318,6 +318,8 @@ class Environment(gym.Env):
         return self.state, reward, self.score, throughput
 
     def _get_throughput_latency(self):
+        throughput = 0.0
+        latency = 0.0
         with open(self.parser.resfile, 'r') as f:
             try:
                 for line in f.readlines():
@@ -328,8 +330,21 @@ class Environment(gym.Env):
                         latency = float(a[1])
             finally:
                 f.close()
-            # print("throughput:{} \n latency:{}".format(throughput, latency))
-            return throughput, latency
+        
+        # 验证性能测量结果
+        if throughput <= 0 or latency <= 0:
+            print("Warning: Invalid performance measurements detected")
+            # 如果内存中有历史数据，使用最近的有效值
+            if len(self.mem) > 0:
+                last_valid = self.mem[-1]
+                throughput = last_valid[0] if throughput <= 0 else throughput
+                latency = last_valid[1] if latency <= 0 else latency
+            else:
+                # 如果是第一次测量就失败，使用一个小的默认值
+                throughput = max(throughput, 1e-7)
+                latency = max(latency, 1e-7)
+        
+        return throughput, latency
 
     def _calculate_reward(self, throughput, latency):
         if len(self.mem) != 0:

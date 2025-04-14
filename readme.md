@@ -25,6 +25,8 @@
 
 1. 安装v 5.7 MySQL数据库
 
+   docker run --name mysql-qt -e MYSQL_ROOT_PASSWORD=123456 -v $(pwd)/docker_conf_sql5.7/init.sql:/docker-entrypoint-initdb.d/init.sql -v $(pwd)/docker_conf_sql5.7/sql.cnf:/etc/mysql/conf.d/sql.cnf -p 3307:3306 -d mysql:5.7
+
    * 给mysql的root用户开启远程访问权限参考：[mysql给root开启远程访问权限](https://www.cnblogs.com/goxcheer/p/8797377.html)
 
    * add a new line `sql_mode=NO_ENGINE_SUBSTITUTION` to `my.cnf` or `my.ini`, and restart mysqld
@@ -32,7 +34,8 @@
 2. 在数据库的服务器上，上传标准测试集的代码，并进行安装：
    * Sysbench：https://blog.csdn.net/cxin917/article/details/81557453（数据库服务器端安装）
      ```
-      sysbench oltp_read_only --db-driver=mysql --tables=4 --table-size=4000000 --threads=141 --events=0 --mysql-host=172.27.58.68 --mysql-user=root --mysql-password=dbmind2020 --mysql-port=3306 --mysql-db='sysbench'  --time=150  --range-size=10  --mysql-storage-engine=innodb --rand-type=uniform --report-interval=10
+     sysbench oltp_read_only prepare --db-driver=mysql --tables=20 --table-size=8000000 --mysql-host=127.0.0.1 --mysql-user=root --mysql-password=123456 --mysql-port=3307 --mysql-db='sysbench' --mysql-storage-engine=innodb --mysql-db='sysbench'  --time=150  --range-size=10 --rand-type=uniform --report-interval=10
+
      ```
    * JOB：https://blog.csdn.net/cxin917/article/details/81557453 (imdb数据集如果下载过慢，可以通过云盘提供)
    * 开启mysqllog，获取workload。
@@ -79,3 +82,13 @@
 **Q:** pd.read_csv: “ValueError: cannot convert float NaN to integer“
 
 **A:** 1. , sep = "\t"; 2. encoding style (utf-8)
+
+
+docker run --name mysql-qt \
+  -e MYSQL_ROOT_PASSWORD=123456 \
+  -v $(pwd)/init.sql:/docker-entrypoint-initdb.d/init.sql $(pwd)/sql.cnf:/etc/mysql/conf.d/sql.cnf \
+  -p 3307:3306 \
+  -d mysql:5.7
+
+
+

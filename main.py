@@ -1,10 +1,9 @@
 import sys
 import time
 import numpy as np
-import tensorflow as tf
-import keras.backend as K
+import torch
 from environment import Database, Environment
-from model import ActorCritic
+from torch_model import ActorCritic
 from configs import parse_args
 from get_workload_from_file import get_workload_from_file
 
@@ -16,8 +15,11 @@ if __name__ == "__main__":
     training_workloads = []
     workload = get_workload_from_file(argus["workload_file_path"])
     argus["workload"] = workload
-    sess = tf.Session()
-    K.set_session(sess)
+    
+    # Set PyTorch device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
     db = Database(argus)  # connector knobs metric
     env = Environment(db, argus)
 
@@ -42,9 +44,14 @@ if __name__ == "__main__":
     # env.parser.estimator.save_weights(filepath=path)
     # env.parser.estimator.load_weights(filepath=path)
 
-    actor_critic = ActorCritic(env, sess, learning_rate=float(argus['learning_rate']),
-                               train_min_size=int(argus['train_min_size']),
-                               size_mem=int(argus['maxlen_mem']), size_predict_mem=int(argus['maxlen_predict_mem']))
+    # Create actor-critic with specified optimizer type
+    optimizer_type = argus.get('optimizer_type', 'adam')  # Default to adam if not specified
+    actor_critic = ActorCritic(env, 
+                              learning_rate=float(argus['learning_rate']),
+                              train_min_size=int(argus['train_min_size']),
+                              size_mem=int(argus['maxlen_mem']), 
+                              size_predict_mem=int(argus['maxlen_predict_mem']),
+                              optimizer_type=optimizer_type)
 
     num_trials = int(argus['num_trial'])  # ?
     # trial_len  = 500   # ?
@@ -95,8 +102,9 @@ if __name__ == "__main__":
 
         if epoch % 5 == 0:
             # print('============save_weights==========')
-            actor_critic.actor_model.save_weights('saved_model_weights/actor_weights.h5')
-            actor_critic.critic_model.save_weights('saved_model_weights/critic_weights.h5')
+            # Save PyTorch model weights
+            torch.save(actor_critic.actor.state_dict(), 'saved_model_weights/actor_weights.pt')
+            torch.save(actor_critic.critic.state_dict(), 'saved_model_weights/critic_weights.pt')
         '''
         if (throughput - cur_throughput) / cur_throughput > float(argus['stopping_throughput_improvement_percentage']):
             print("training end!!")
