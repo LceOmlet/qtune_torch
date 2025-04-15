@@ -2,12 +2,14 @@ import threading
 import time
 import queue
 import pymysql
+import psycopg2
 from concurrent.futures import ThreadPoolExecutor
-from configs import parse_args
+from configs import parse_args, get_db_type
 from dbutils.pooled_db import PooledDB
 from tqdm import tqdm
 
 args = parse_args()
+db_type = get_db_type()
 lock = threading.Lock()
 total_lat = 0
 error_query_num = 0
@@ -39,7 +41,7 @@ def consumer_process(task_key):
     if query:
         try:
             start = time.time()
-            result = mysql_query(query)
+            result = execute_query(query)
             end = time.time()
             interval = end - start
 
@@ -71,24 +73,46 @@ def run_job(thread_num=1, workload=[], resfile="../output.res"):
     print(f"Using {max_threads} threads for processing")
 
     try:
-        POOL = PooledDB(
-            creator=pymysql,
-            maxconnections=min(max_threads, 100),  # 限制最大连接数
-            mincached=2,  # 保持最小连接数
-            maxcached=5,  # 限制最大缓存连接数
-            maxshared=3,
-            blocking=True,
-            maxusage=None,
-            setsession=[],
-            ping=1,  # 启用ping
-            host=args["host"],
-            port=int(args["port"]),
-            user=args["user"],
-            password=args["password"],
-            database=args["database"],
-            charset='utf8',
-            connect_timeout=10  # 添加连接超时
-        )
+        # Initialize the appropriate database connection pool
+        if db_type == 'mysql':
+            POOL = PooledDB(
+                creator=pymysql,
+                maxconnections=min(max_threads, 100),  # 限制最大连接数
+                mincached=2,  # 保持最小连接数
+                maxcached=5,  # 限制最大缓存连接数
+                maxshared=3,
+                blocking=True,
+                maxusage=None,
+                setsession=[],
+                ping=1,  # 启用ping
+                host=args["host"],
+                port=int(args["port"]),
+                user=args["user"],
+                password=args["password"],
+                database=args["database"],
+                charset='utf8',
+                connect_timeout=10  # 添加连接超时
+            )
+        elif db_type == 'postgresql':
+            POOL = PooledDB(
+                creator=psycopg2,
+                maxconnections=min(max_threads, 100),
+                mincached=2,
+                maxcached=5,
+                maxshared=3,
+                blocking=True,
+                maxusage=None,
+                setsession=[],
+                ping=1,
+                host=args["host"],
+                port=int(args["port"]),
+                user=args["user"],
+                password=args["password"],
+                database=args["database"],
+                connect_timeout=10
+            )
+        else:
+            raise ValueError(f"Unsupported database type: {db_type}")
 
         # 使用有界队列，限制队列大小
         main_queue = queue.Queue(maxsize=1000)  # 限制队列大小
@@ -170,6 +194,17 @@ def run_job(thread_num=1, workload=[], resfile="../output.res"):
             POOL.close()
 
 
+def execute_query(sql: str) -> bool:
+    """Execute a database query based on the configured database type"""
+    if db_type == 'mysql':
+        return mysql_query(sql)
+    elif db_type == 'postgresql':
+        return postgresql_query(sql)
+    else:
+        print(f"Unsupported database type: {db_type}")
+        return False
+
+
 def mysql_query(sql: str) -> bool:
     try:
         global POOL
@@ -180,7 +215,24 @@ def mysql_query(sql: str) -> bool:
         conn.commit()
         return True
     except Exception as error:
-        print("mysql execute: " + str(error))
+        print("MySQL execute: " + str(error))
+        return False
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
+def postgresql_query(sql: str) -> bool:
+    try:
+        global POOL
+        conn = POOL.connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        cursor.close()
+        conn.commit()
+        return True
+    except Exception as error:
+        print("PostgreSQL execute: " + str(error))
         return False
     finally:
         if 'conn' in locals():

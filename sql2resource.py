@@ -3,10 +3,11 @@ import pandas
 import json
 import os
 import pymysql
+import psycopg2
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from configs import predictor_output_dim
+from configs import predictor_output_dim, get_db_type
 
 query_types = ["insert", "delete", "update", "select"]
 
@@ -68,7 +69,8 @@ class SqlParser:
 
         self.resfile = os.path.join("scripts/") + "output.res"
         self.argus = argus
-        self.conn = self.mysql_conn()
+        self.db_type = get_db_type()
+        self.conn = self.db_conn()
         self.tables = self.get_database_tables()
         self.query_encoding_map = {}
         ########### Convert from the sql statement to the sql vector
@@ -121,26 +123,71 @@ class SqlParser:
 
         query_split_list = query.replace(",", "").split(" ")
 
-        explain_format_fetchall = self.mysql_query("EXPLAIN FORMAT=JSON {};".format(query))
-        if not explain_format_fetchall:
-            print("explain_format_fetchall is empty, query: {}".format(query))
-            return []
-        explain_format = json.loads(explain_format_fetchall[0][0])
-        explain_format_tables_list = self.get_explain_format_tables_list([], explain_format.get("query_block"), "table")
-        for explain_format_table in explain_format_tables_list:
-            explain_format_table_name = explain_format_table["table_name"]
-            index = query_split_list.index(explain_format_table_name)
-            if query_split_list[index - 1].lower() == "as":
-                explain_format_table_name = query_split_list[index - 2]
-            else:
-                explain_format_table_name = query_split_list[index - 1]
+        if self.db_type == 'mysql':
+            explain_format_fetchall = self.db_query("EXPLAIN FORMAT=JSON {};".format(query))
+            if not explain_format_fetchall:
+                print("explain_format_fetchall is empty, query: {}".format(query))
+                return []
+            explain_format = json.loads(explain_format_fetchall[0][0])
+            explain_format_tables_list = self.get_explain_format_tables_list([], explain_format.get("query_block"), "table")
+            for explain_format_table in explain_format_tables_list:
+                explain_format_table_name = explain_format_table["table_name"]
+                index = query_split_list.index(explain_format_table_name)
+                if query_split_list[index - 1].lower() == "as":
+                    explain_format_table_name = query_split_list[index - 2]
+                else:
+                    explain_format_table_name = query_split_list[index - 1]
 
-            for index, table_name in enumerate(self.tables):
-                if explain_format_table_name == table_name:
-                    result[index + len(query_types)] = float(explain_format_table["cost_info"]["prefix_cost"])
-                    continue
+                for index, table_name in enumerate(self.tables):
+                    if explain_format_table_name == table_name:
+                        result[index + len(query_types)] = float(explain_format_table["cost_info"]["prefix_cost"])
+                        continue
+                        
+        elif self.db_type == 'postgresql':
+            # PostgreSQL uses a different EXPLAIN format
+            explain_fetchall = self.db_query("EXPLAIN (FORMAT JSON) {};".format(query))
+            if not explain_fetchall or not explain_fetchall[0][0]:
+                print("explain_fetchall is empty, query: {}".format(query))
+                return []
+                
+            explain_data = explain_fetchall[0][0]
+            # Extract table names and costs from PostgreSQL's explain output
+            table_costs = self.extract_pg_table_costs(explain_data, query_split_list)
+            
+            for table_name, cost in table_costs:
+                for index, known_table in enumerate(self.tables):
+                    if table_name == known_table:
+                        result[index + len(query_types)] = float(cost)
+                        continue
+                        
         self.query_encoding_map[str(query)] = result
         return result
+
+    def extract_pg_table_costs(self, explain_data, query_split):
+        """Extract table names and costs from PostgreSQL's explain JSON output"""
+        table_costs = []
+        
+        # Parse the JSON explain output
+        try:
+            plan_data = json.loads(explain_data)[0]['Plan']
+            self._extract_tables_from_plan(plan_data, table_costs)
+        except Exception as e:
+            print(f"Error parsing PostgreSQL EXPLAIN output: {str(e)}")
+        
+        return table_costs
+    
+    def _extract_tables_from_plan(self, plan, table_costs, parent_cost=0):
+        """Recursively extract table information from PostgreSQL explain plan"""
+        if 'Relation Name' in plan:
+            table_name = plan['Relation Name']
+            # Use Total Cost or the parent's cost
+            cost = plan.get('Total Cost', parent_cost)
+            table_costs.append((table_name, cost))
+            
+        # Process child plans
+        if 'Plans' in plan:
+            for child_plan in plan['Plans']:
+                self._extract_tables_from_plan(child_plan, table_costs, plan.get('Total Cost', 0))
 
     def predict_sql_resource(self, workload=[]):
         # Predict sql convert
@@ -159,6 +206,15 @@ class SqlParser:
     def update(self):
         pass
 
+    def db_conn(self):
+        """Create a database connection based on the configured type"""
+        if self.db_type == 'mysql':
+            return self.mysql_conn()
+        elif self.db_type == 'postgresql':
+            return self.postgresql_conn()
+        else:
+            raise ValueError(f"Unsupported database type: {self.db_type}")
+
     def mysql_conn(self):
         conn = pymysql.connect(
             host=self.argus["host"],
@@ -169,12 +225,32 @@ class SqlParser:
             charset='utf8')
         conn.select_db(self.argus["database"])
         return conn
+        
+    def postgresql_conn(self):
+        conn = psycopg2.connect(
+            host=self.argus["host"],
+            user=self.argus["user"],
+            password=self.argus["password"],
+            port=int(self.argus["port"]),
+            database=self.argus["database"],
+            connect_timeout=30)
+        return conn
 
-    def close_mysql_conn(self):
+    def close_db_conn(self):
         try:
             self.conn.close()
         except Exception as error:
-            print("close mysqlconn: " + str(error))
+            print("close db connection: " + str(error))
+
+    def db_query(self, sql):
+        """Execute a query based on the configured database type"""
+        if self.db_type == 'mysql':
+            return self.mysql_query(sql)
+        elif self.db_type == 'postgresql':
+            return self.postgresql_query(sql)
+        else:
+            print(f"Unsupported database type: {self.db_type}")
+            return None
 
     def mysql_query(self, sql):
         try:
@@ -187,17 +263,40 @@ class SqlParser:
             cursor.close()
             return result
         except Exception as error:
-            print("mysql execute: " + str(error))
+            print("MySQL execute: " + str(error))
+            return None
+            
+    def postgresql_query(self, sql):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql)
+            try:
+                result = cursor.fetchall()
+            except psycopg2.ProgrammingError:
+                # No results to fetch
+                result = 0
+            cursor.close()
+            return result
+        except Exception as error:
+            print("PostgreSQL execute: " + str(error))
             return None
 
     def get_database_tables(self):
         # get all tables
-        tables_fetchall = self.mysql_query(
-            "select table_name from information_schema.tables where table_schema='{}';".format(self.argus["database"]))
+        if self.db_type == 'mysql':
+            tables_fetchall = self.db_query(
+                "select table_name from information_schema.tables where table_schema='{}';".format(self.argus["database"]))
+        elif self.db_type == 'postgresql':
+            tables_fetchall = self.db_query(
+                "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public';")
+        else:
+            print(f"Unsupported database type: {self.db_type}")
+            return []
+            
         tables = []
         if not tables_fetchall:
             print("tables was not found")
-            return
+            return []
         for table in tables_fetchall:
             if table and table[0]:
                 tables.append(table[0])

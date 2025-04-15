@@ -21,6 +21,11 @@ def parse_args():
     return config_dict["database_tune"]
 
 
+def get_db_type():
+    db_config = parse_args()
+    return db_config.get("db_type", "mysql").lower()
+
+
 def parse_knob_config():
     _knob_config = config_dict["knob_config"]
     for key in _knob_config:

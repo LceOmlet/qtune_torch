@@ -178,6 +178,19 @@ class Critic(nn.Module):
         state = state.float()
         action = action.float()
         
+        # Print shapes for debugging
+        # print(f"State shape: {state.shape}, Action shape: {action.shape}")
+        
+        # Reshape state if needed (1D to 2D)
+        if len(state.shape) == 1:
+            state = state.unsqueeze(0)  # Add batch dimension
+            
+        # Reshape action if needed (1D to 2D)
+        if len(action.shape) == 1:
+            action = action.unsqueeze(0)  # Add batch dimension
+            
+        # print(f"After reshape - State shape: {state.shape}, Action shape: {action.shape}")
+        
         state_out = self.state_fc(state)
         action_out = self.action_fc(action)
         
@@ -290,8 +303,16 @@ class ActorCritic:
             # Evaluate each model in population
             for model in population:
                 cur_state, action, reward, new_state, _ = samples[0]  # Use first sample for evaluation
-                cur_state = (cur_state - min(cur_state[0]))/(max(cur_state[0])-min(cur_state[0]))
+                # Normalize state
+                if len(cur_state.shape) > 1 and cur_state.shape[0] > 0:
+                    cur_state = (cur_state - min(cur_state[0]))/(max(cur_state[0])-min(cur_state[0]) + 1e-10)
+                
                 cur_state_tensor = torch.FloatTensor(cur_state).float()
+                
+                # Ensure tensor has batch dimension
+                if len(cur_state_tensor.shape) == 1:
+                    cur_state_tensor = cur_state_tensor.unsqueeze(0)
+                
                 # Set model to evaluation mode
                 model.eval()
                 with torch.no_grad():
@@ -301,7 +322,13 @@ class ActorCritic:
                 
                 # Calculate critic gradients
                 critic_state_tensor = torch.FloatTensor(cur_state).float()
+                if len(critic_state_tensor.shape) == 1:
+                    critic_state_tensor = critic_state_tensor.unsqueeze(0)
+                    
                 critic_action_tensor = torch.FloatTensor(predicted_action).float()
+                if len(critic_action_tensor.shape) == 1:
+                    critic_action_tensor = critic_action_tensor.unsqueeze(0)
+                
                 critic_action_tensor.requires_grad = True
                 # Set critic to evaluation mode
                 self.critic.eval()
@@ -319,14 +346,25 @@ class ActorCritic:
             # Original Adam optimizer training
             for sample in samples:
                 cur_state, action, reward, new_state, _ = sample
-                cur_state = (cur_state - min(cur_state[0]))/(max(cur_state[0])-min(cur_state[0]))
+                
+                # Normalize state
+                if len(cur_state.shape) > 1 and cur_state.shape[0] > 0:
+                    cur_state = (cur_state - min(cur_state[0]))/(max(cur_state[0])-min(cur_state[0]) + 1e-10)
+                
                 cur_state_tensor = torch.FloatTensor(cur_state).float()
+                
+                # Ensure tensor has batch dimension
+                if len(cur_state_tensor.shape) == 1:
+                    cur_state_tensor = cur_state_tensor.unsqueeze(0)
                 
                 # Get predicted action
                 predicted_action = self.actor(cur_state_tensor)
                 
                 # Calculate critic gradients
                 critic_state_tensor = torch.FloatTensor(cur_state).float()
+                if len(critic_state_tensor.shape) == 1:
+                    critic_state_tensor = critic_state_tensor.unsqueeze(0)
+                
                 critic_action_tensor = predicted_action.clone().detach()
                 critic_action_tensor.requires_grad = True
                 critic_value = self.critic(critic_state_tensor, critic_action_tensor)
@@ -354,12 +392,28 @@ class ActorCritic:
             cur_state, action, t_reward, new_state, done = sample
             reward = np.array([])
             reward = np.append(reward, t_reward[0])
-            cur_state = (cur_state - min(cur_state[0]))/(max(cur_state[0])-min(cur_state[0]))
+            
+            # Normalize state
+            if len(cur_state.shape) > 1 and cur_state.shape[0] > 0:
+                cur_state = (cur_state - min(cur_state[0]))/(max(cur_state[0])-min(cur_state[0]) + 1e-10)
+            
+            # Print debug info
+            # print(f"Current state shape: {cur_state.shape}, Action shape: {action.shape}")
             
             # Convert to tensors with explicit float32 dtype
             cur_state_tensor = torch.FloatTensor(cur_state).float()
             action_tensor = torch.FloatTensor(action).float()
             new_state_tensor = torch.FloatTensor(new_state).float()
+            
+            # Make sure tensors have batch dimension
+            if len(cur_state_tensor.shape) == 1:
+                cur_state_tensor = cur_state_tensor.unsqueeze(0)
+            if len(action_tensor.shape) == 1:
+                action_tensor = action_tensor.unsqueeze(0)
+            if len(new_state_tensor.shape) == 1:
+                new_state_tensor = new_state_tensor.unsqueeze(0)
+                
+            print(f"Tensor shapes - State: {cur_state_tensor.shape}, Action: {action_tensor.shape}")
             
             # Get target action from target actor
             # Set target actor to evaluation mode
@@ -387,7 +441,7 @@ class ActorCritic:
             # Update critic
             self.critic_optimizer.zero_grad()
             critic_value = self.critic(cur_state_tensor, action_tensor)
-            target_value = torch.FloatTensor(reward).float()
+            target_value = torch.FloatTensor(reward).float().unsqueeze(0).unsqueeze(0)  # Make sure it has [batch, 1] shape
             critic_loss = F.mse_loss(critic_value, target_value)
             critic_loss.backward()
             self.critic_optimizer.step()
@@ -452,14 +506,29 @@ class ActorCritic:
             flag = 0
         else:
             print("[Model Tuning]")
-            cur_state = (cur_state - min(cur_state[0]))/(max(cur_state[0])-min(cur_state[0]))
+            # Normalize state
+            if len(cur_state.shape) > 1 and cur_state.shape[0] > 0:
+                cur_state = (cur_state - min(cur_state[0]))/(max(cur_state[0])-min(cur_state[0]) + 1e-10)
+            
             cur_state_tensor = torch.FloatTensor(cur_state).float()
+            
+            # Ensure tensor has batch dimension
+            if len(cur_state_tensor.shape) == 1:
+                cur_state_tensor = cur_state_tensor.unsqueeze(0)
+                
+            # print(f"In act() - state tensor shape: {cur_state_tensor.shape}")
+                
             # Set actor to evaluation mode
             self.actor.eval()
             with torch.no_grad():
-                action = self.actor(cur_state_tensor).numpy()[0]
+                action = self.actor(cur_state_tensor)
+                # If we get a batch dimension, take the first item
+                if len(action.shape) > 1:
+                    action = action[0]
+                action = action.numpy()
             # Set actor back to training mode
             self.actor.train()
+            
             print(action)
             action_tmp = action
             action = np.round(action)
