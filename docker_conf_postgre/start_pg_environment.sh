@@ -4,13 +4,15 @@ set -e
 # 本地环境变量
 export PATH=$PATH:/usr/bin:/usr/local/bin
 PG_HOST="localhost"  # 连接到本地映射的Docker端口
-PG_PORT="54321"      # 修正为配置文件中映射的正确端口
+PG_PORT="5432"      # 修正为配置文件中映射的正确端口
 PG_USER="root"
 PG_PASSWORD="123456"
 PG_DB="sysbench"
 table_size=8000000
 table_num=20
 # 等待PostgreSQL启动
+docker-compose -f docker-compose-pg.yml up -d
+
 echo "等待PostgreSQL服务就绪..."
 MAX_RETRY=30
 RETRY_INTERVAL=5
