@@ -44,13 +44,14 @@ def consumer_process(task_key):
             result = execute_query(query)
             end = time.time()
             interval = end - start
-
+            # print(f"interval: {interval}")
             if result:
                 with lock:
                     total_lat += interval
             else:
                 with lock:
                     error_query_num += 1
+            # print(f"total_lat: {total_lat}")
         except Exception as e:
             print(f"Process error: {str(e)}")
             with lock:
@@ -129,7 +130,7 @@ def run_job(thread_num=1, workload=[], resfile="../output.res"):
             processed_count = 0
             
             # 使用批处理方式提交任务
-            batch_size = 8000  # 每批处理的任务数
+            batch_size = 99999 + 1 # 每批处理的任务数
             current_batch = []
             
             while processed_count < workload_len:

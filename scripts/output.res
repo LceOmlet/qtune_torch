@@ -1,3 +1,3 @@
 
-avg_qps(queries/s): 	521.2461
-avg_lat(s): 	0.0893
+avg_qps(queries/s): 	1108.6364
+avg_lat(s): 	0.0399

@@ -16,10 +16,6 @@ PyTorch implementation of QTune for automatic database configuration tuning.
 
 [✓] Zero-Order optimization support for actor network training
 
-[✓] Early stopping
-   
-      Set the stopping_throughput_improvement_percentage parameter in config.ini file.
-
 [todo] Support restart/non-restart parameters simultaneously
 
 [todo] Support template-based online parameter tuning; end-to-end training of tuning models and workload encoding models

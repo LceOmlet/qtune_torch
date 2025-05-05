@@ -13,7 +13,7 @@ class DictParser(configparser.ConfigParser):
 
 
 cf = DictParser()
-cf.read("config.ini", encoding="utf-8")
+cf.read("config_1.ini", encoding="utf-8")
 config_dict = cf.read_dict()
 
 

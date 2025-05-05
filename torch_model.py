@@ -21,8 +21,83 @@ import os
 from copy import deepcopy
 from configs import knob_config, config_dict
 
+# Action normalization utility functions
+def normalize_action(action, a_low, a_high):
+    """
+    Normalize actions to the range [-1, 1] for better training stability.
+    Works with both PyTorch tensors and NumPy arrays.
+    
+    Args:
+        action: The action tensor or numpy array to normalize
+        a_low: Lower bound of action space
+        a_high: Upper bound of action space
+        
+    Returns:
+        Normalized action in range [-1, 1]
+    """
+    if isinstance(action, torch.Tensor):
+        # Handle tensor case
+        a_range = torch.tensor(a_high - a_low, device=action.device, dtype=action.dtype)
+        a_middle = torch.tensor((a_high + a_low) / 2, device=action.device, dtype=action.dtype)
+        
+        # Map to [-1, 1]
+        normalized = 2.0 * ((action - a_middle) / a_range)
+        
+        # Clip to ensure it's in range
+        normalized = torch.clamp(normalized, -1.0, 1.0)
+        return normalized
+    else:
+        # Handle numpy case
+        a_range = a_high - a_low
+        a_middle = (a_high + a_low) / 2
+        
+        # Map to [-1, 1]
+        normalized = 2.0 * ((action - a_middle) / a_range)
+        
+        # Clip to ensure it's in range
+        normalized = np.clip(normalized, -1.0, 1.0)
+        return normalized
+
+def denormalize_action(normalized_action, a_low, a_high):
+    """
+    Convert normalized actions from [-1, 1] back to the original action space.
+    Works with both PyTorch tensors and NumPy arrays.
+    
+    Args:
+        normalized_action: Action in normalized space [-1, 1]
+        a_low: Lower bound of action space
+        a_high: Upper bound of action space
+        
+    Returns:
+        Action in original action space [a_low, a_high]
+    """
+    if isinstance(normalized_action, torch.Tensor):
+        # Handle tensor case
+        a_range = torch.tensor(a_high - a_low, device=normalized_action.device, dtype=normalized_action.dtype)
+        a_middle = torch.tensor((a_high + a_low) / 2, device=normalized_action.device, dtype=normalized_action.dtype)
+        
+        # Map from [-1, 1] to [a_low, a_high]
+        denormalized = (normalized_action * a_range / 2) + a_middle
+        
+        # Clip to ensure it's in range
+        denormalized = torch.clamp(denormalized, a_low, a_high)
+        return denormalized
+    else:
+        # Handle numpy case
+        a_range = a_high - a_low
+        a_middle = (a_high + a_low) / 2
+        
+        # Map from [-1, 1] to [a_low, a_high]
+        denormalized = (normalized_action * a_range / 2) + a_middle
+        
+        # Clip to ensure it's in range
+        denormalized = np.clip(denormalized, a_low, a_high)
+        return denormalized
+
 # Custom activation function for target range
 def target_range(x, target_min=None, target_max=None):
+    target_min = torch.tensor(target_min).to(x.device)
+    target_max = torch.tensor(target_max).to(x.device)
     if target_min is None or target_max is None:
         # Default values if not provided
         target_min = 0
@@ -167,19 +242,54 @@ class Critic(nn.Module):
         self.action_fc = nn.Linear(action_dim, 128)
         
         self.fc1 = nn.Linear(256, 256)
-        self.bn1 = nn.BatchNorm1d(256, affine=False)
+        self.bn1 = nn.BatchNorm1d(256, affine=True)
         self.fc2 = nn.Linear(256, 64)
         self.dropout = nn.Dropout(0.3)
-        self.bn2 = nn.BatchNorm1d(64, affine=False)
+        self.bn2 = nn.BatchNorm1d(64, affine=True)
         self.fc3 = nn.Linear(64, 1)
+        
+    def normalize_action(self, action, a_low=None, a_high=None):
+        """
+        Normalize actions to the range [-1, 1] for better training stability.
+        
+        Args:
+            action: The action tensor to normalize
+            a_low: Lower bound of action space (optional)
+            a_high: Upper bound of action space (optional)
+            
+        Returns:
+            Normalized action in range [-1, 1]
+        """
+        # If bounds are not provided, use default normalization
+        if a_low is None or a_high is None:
+            # Simple min-max normalization within the batch
+            if len(action.shape) > 1 and action.shape[0] > 1:
+                # For batches with multiple samples
+                min_val = torch.min(action, dim=0)[0]
+                max_val = torch.max(action, dim=0)[0]
+                range_val = max_val - min_val
+                # Avoid division by zero
+                range_val = torch.where(range_val > 1e-6, range_val, torch.ones_like(range_val))
+                return 2.0 * ((action - min_val) / range_val) - 1.0
+            else:
+                # For single samples, use a reasonable default range
+                return torch.tanh(action)
+        else:
+            # Use the provided bounds for normalization
+            a_range = torch.tensor(a_high - a_low, device=action.device, dtype=action.dtype)
+            a_middle = torch.tensor((a_high + a_low) / 2, device=action.device, dtype=action.dtype)
+            
+            # Map to [-1, 1]
+            normalized = 2.0 * ((action - a_middle) / a_range)
+            
+            # Clip to ensure it's in range
+            normalized = torch.clamp(normalized, -1.0, 1.0)
+            return normalized
         
     def forward(self, state, action):
         # Ensure both inputs are float32
         state = state.float()
         action = action.float()
-        
-        # Print shapes for debugging
-        # print(f"State shape: {state.shape}, Action shape: {action.shape}")
         
         # Reshape state if needed (1D to 2D)
         if len(state.shape) == 1:
@@ -189,18 +299,25 @@ class Critic(nn.Module):
         if len(action.shape) == 1:
             action = action.unsqueeze(0)  # Add batch dimension
             
-        # print(f"After reshape - State shape: {state.shape}, Action shape: {action.shape}")
+        # Normalize the action input if model has access to environment bounds
+        if hasattr(self, 'env'):
+            action = self.normalize_action(action, self.env.a_low, self.env.a_high)
+        else:
+            # Use simple normalization if bounds aren't available
+            action = self.normalize_action(action)
         
         state_out = self.state_fc(state)
         action_out = self.action_fc(action)
-        
+        state_out = torch.tanh(state_out)
+        action_out = torch.tanh(action_out)
         # Merge state and action - concatenate instead of adding
         merged = torch.cat([state_out, action_out], dim=1)
-        
+
         # Check if we're in training mode and have a batch size of 1
         if self.training and merged.size(0) == 1:
             # For batch size 1 during training, use a simple forward pass without batch norm
             x = self.fc1(merged)
+            x = torch.tanh(x)
             x = torch.tanh(self.fc2(x))
             x = self.dropout(x)
             x = self.fc3(x)
@@ -208,6 +325,7 @@ class Critic(nn.Module):
             # Normal forward pass with batch norm
             x = self.fc1(merged)
             x = self.bn1(x)
+            x = torch.tanh(x)
             x = torch.tanh(self.fc2(x))
             x = self.dropout(x)
             x = self.bn2(x)
@@ -253,6 +371,10 @@ class ActorCritic:
             state_dim=env.observation_space.shape[0],
             action_dim=env.action_space.shape[0]
         )
+        
+        # Set environment reference for action normalization
+        self.critic.env = env
+        self.target_critic.env = env
         
         # Initialize target networks with the same weights
         self.target_actor.load_state_dict(self.actor.state_dict())
@@ -333,11 +455,10 @@ class ActorCritic:
                 # Set critic to evaluation mode
                 self.critic.eval()
                 critic_value = self.critic(critic_state_tensor, critic_action_tensor)
-                critic_value.backward()
-                grads = critic_action_tensor.grad.numpy()
+                reward = critic_value.detach().cpu().numpy()
                 # Set critic back to training mode
                 self.critic.train()
-                rewards.append(np.mean(grads))
+                rewards.append(reward)
             
             # Update population using zero-order optimization
             self.zero_order_opt.update_population(np.array(rewards))
@@ -427,7 +548,7 @@ class ActorCritic:
             # Set target critic to evaluation mode
             self.target_critic.eval()
             with torch.no_grad():
-                future_reward = self.target_critic(new_state_tensor, target_action).detach().numpy()[0][0]
+                future_reward = self.target_critic(new_state_tensor, target_action)[0][0].detach().numpy()
             # Set target critic back to training mode
             self.target_critic.train()
             
@@ -435,6 +556,7 @@ class ActorCritic:
             print("future_reward:", future_reward)
             reward += self.gamma * future_reward
             print("reward:", reward)
+            print("new_state_tensor:", new_state_tensor)
             print("target_action:", target_action.detach().numpy())
             print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
             
@@ -470,8 +592,14 @@ class ActorCritic:
         
         writer = open('training-results/training-' + str(self.timestamp), 'a')
         writer.write('samples\n')
-        writer.write(f"{str(i)}\t{str(np.array(samples)[:,2])}\n")
-        writer.close()
+        try:
+            # Extract rewards manually instead of using numpy indexing
+            rewards_str = [sample[2] for sample in samples]
+            writer.write(f"{str(i)}\t{str(rewards_str)}\n")
+        except Exception as e:
+            print(f"Error writing samples: {e}")
+            print(f"Samples: {samples}")
+            raise e
         
         self._train_critic(samples, i)
         self._train_actor(samples, i)
@@ -480,10 +608,10 @@ class ActorCritic:
     def update_target(self):
         # Soft update of target networks
         for target_param, param in zip(self.target_actor.parameters(), self.actor.parameters()):
-            target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+            target_param.data.copy_(param.data)
             
         for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
-            target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+            target_param.data.copy_(param.data)
 
     def get_calculate_knobs(self, action):
         caculate_knobs = list(knob_config)[len(action):]

@@ -295,7 +295,7 @@ class Environment(gym.Env):
 
             action_write = open('training-results/action_test_predict-' + str(self.timestamp), 'a')
             action_write.write(f"{str(iteration)}\t{str(list(u))}\n")
-            action_write.write(f"{str(iteration)}\t{str(list(action_tmp))}\n")
+            # action_write.write(f"{str(iteration)}\t{str(list(action_tmp))}\n")
             action_write.close()
 
             self.score = self.score + reward
@@ -312,7 +312,7 @@ class Environment(gym.Env):
             action_write.close()
 
             fetch_knob = open('training-results/fetch_knob_random-' + str(self.timestamp), 'a')
-            fetch_knob.write(f"{str(iteration)}\t{str(list(action))}\n")
+            fetch_knob.write(f"{str(iteration)}\t{str(action.astype(float).tolist())}\n")
             fetch_knob.close()
 
         return self.state, reward, self.score, throughput
